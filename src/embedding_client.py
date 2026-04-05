@@ -23,11 +23,16 @@ class BatchItem(NamedTuple):
 
 class _EmbeddingClient:
     """
-    Embedding client supporting OpenAI and Gemini with chunking and batching support.
+    Embedding client supporting OpenAI, OpenAI-compatible backends, and Gemini.
     """
 
     def __init__(self, api_key: str | None = None, provider: str | None = None):
-        self.provider: str = provider or settings.LLM.EMBEDDING_PROVIDER
+        raw_provider = provider or settings.LLM.EMBEDDING_PROVIDER
+        self.provider: str = (
+            "openai_compatible"
+            if raw_provider in {"openai_compatible", "openrouter"}
+            else raw_provider
+        )
 
         if self.provider == "gemini":
             if api_key is None:
@@ -35,33 +40,49 @@ class _EmbeddingClient:
             if not api_key:
                 raise ValueError("Gemini API key is required")
             self.client: genai.Client | AsyncOpenAI = genai.Client(api_key=api_key)
-            self.model: str = "gemini-embedding-001"
+            self.model = settings.LLM.EMBEDDING_MODEL or "gemini-embedding-001"
             # Gemini has a 2048 token limit
             self.max_embedding_tokens: int = min(settings.MAX_EMBEDDING_TOKENS, 2048)
             # Gemini batch size is not documented, using conservative estimate
             self.max_batch_size: int = 100
-        elif self.provider == "openrouter":
+        elif self.provider == "openai_compatible":
             if api_key is None:
-                api_key = settings.LLM.OPENAI_COMPATIBLE_API_KEY
+                api_key = (
+                    settings.LLM.EMBEDDING_API_KEY
+                    or settings.LLM.OPENAI_COMPATIBLE_API_KEY
+                )
             if not api_key:
                 raise ValueError(
-                    "OpenRouter API key (LLM_OPENAI_COMPATIBLE_API_KEY) is required"
+                    "An embedding API key is required for openai_compatible embeddings"
                 )
             base_url = (
-                settings.LLM.OPENAI_COMPATIBLE_BASE_URL
-                or "https://openrouter.ai/api/v1"
+                settings.LLM.EMBEDDING_BASE_URL
+                or settings.LLM.OPENAI_COMPATIBLE_BASE_URL
+                or (
+                    "https://openrouter.ai/api/v1"
+                    if raw_provider == "openrouter"
+                    else None
+                )
             )
+            if not base_url:
+                raise ValueError(
+                    "An embedding base URL is required for openai_compatible embeddings"
+                )
             self.client = AsyncOpenAI(api_key=api_key, base_url=base_url)
-            self.model = "openai/text-embedding-3-small"
+            self.model = settings.LLM.EMBEDDING_MODEL or (
+                "openai/text-embedding-3-small"
+                if raw_provider == "openrouter"
+                else "text-embedding-3-small"
+            )
             self.max_embedding_tokens = settings.MAX_EMBEDDING_TOKENS
             self.max_batch_size = 2048  # Same as OpenAI
         else:  # openai
             if api_key is None:
-                api_key = settings.LLM.OPENAI_API_KEY
+                api_key = settings.LLM.EMBEDDING_API_KEY or settings.LLM.OPENAI_API_KEY
             if not api_key:
                 raise ValueError("OpenAI API key is required")
             self.client = AsyncOpenAI(api_key=api_key)
-            self.model = "text-embedding-3-small"
+            self.model = settings.LLM.EMBEDDING_MODEL or "text-embedding-3-small"
             self.max_embedding_tokens = settings.MAX_EMBEDDING_TOKENS
             self.max_batch_size = 2048  # OpenAI batch limit
 
@@ -82,7 +103,7 @@ class _EmbeddingClient:
             response = await self.client.aio.models.embed_content(
                 model=self.model,
                 contents=query,
-                config={"output_dimensionality": 1536},
+                config={"output_dimensionality": settings.VECTOR_STORE.DIMENSIONS},
             )
             if not response.embeddings or not response.embeddings[0].values:
                 raise ValueError("No embedding returned from Gemini API")
@@ -116,7 +137,9 @@ class _EmbeddingClient:
                     response = await self.client.aio.models.embed_content(
                         model=self.model,
                         contents=batch,  # pyright: ignore[reportArgumentType]
-                        config={"output_dimensionality": 1536},
+                        config={
+                            "output_dimensionality": settings.VECTOR_STORE.DIMENSIONS
+                        },
                     )
                     if response.embeddings:
                         for emb in response.embeddings:
@@ -252,7 +275,9 @@ class _EmbeddingClient:
                     response = await self.client.aio.models.embed_content(
                         model=self.model,
                         contents=[item.text for item in batch],
-                        config={"output_dimensionality": 1536},
+                        config={
+                            "output_dimensionality": settings.VECTOR_STORE.DIMENSIONS
+                        },
                     )
                     if response.embeddings:
                         for item, embedding in zip(
@@ -380,10 +405,16 @@ class EmbeddingClient:
                     provider = settings.LLM.EMBEDDING_PROVIDER
                     if provider == "gemini":
                         api_key = settings.LLM.GEMINI_API_KEY
-                    elif provider == "openrouter":
-                        api_key = settings.LLM.OPENAI_COMPATIBLE_API_KEY
+                    elif provider in {"openai_compatible", "openrouter"}:
+                        api_key = (
+                            settings.LLM.EMBEDDING_API_KEY
+                            or settings.LLM.OPENAI_COMPATIBLE_API_KEY
+                        )
                     else:
-                        api_key = settings.LLM.OPENAI_API_KEY
+                        api_key = (
+                            settings.LLM.EMBEDDING_API_KEY
+                            or settings.LLM.OPENAI_API_KEY
+                        )
 
                     self._instance = _EmbeddingClient(
                         api_key=api_key, provider=provider

@@ -10,6 +10,8 @@ services:
     entrypoint: ["sh", "/app/docker/entrypoint.sh"]
     restart: unless-stopped
     depends_on:
+      embeddings:
+        condition: service_healthy
       postgres:
         condition: service_healthy
       redis:
@@ -24,6 +26,34 @@ services:
     volumes:
       - ${HONCHO_CODEX_DIR}:/config/codex
       - /etc/localtime:/etc/localtime:ro
+
+  embeddings:
+    container_name: honcho_embeddings
+    image: ollama/ollama:latest
+    restart: unless-stopped
+    gpus: all
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - >
+        OLLAMA_HOST=0.0.0.0:${HONCHO_EMBEDDINGS_PORT} ollama serve &
+        pid=$$!;
+        until OLLAMA_HOST=127.0.0.1:${HONCHO_EMBEDDINGS_PORT} ollama list >/dev/null 2>&1; do sleep 1; done;
+        OLLAMA_HOST=127.0.0.1:${HONCHO_EMBEDDINGS_PORT} ollama pull ${HONCHO_EMBEDDINGS_MODEL};
+        wait $$pid
+    environment:
+      NVIDIA_VISIBLE_DEVICES: all
+      NVIDIA_DRIVER_CAPABILITIES: compute,utility
+    volumes:
+      - ${HONCHO_EMBEDDINGS_CACHE}:/root/.ollama
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "OLLAMA_HOST=127.0.0.1:${HONCHO_EMBEDDINGS_PORT} ollama show ${HONCHO_EMBEDDINGS_MODEL} >/dev/null 2>&1",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 60
 
   postgres:
     container_name: honcho_postgres
