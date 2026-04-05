@@ -26,6 +26,7 @@ from src.config import LLMComponentSettings, settings
 from src.exceptions import LLMError
 from src.telemetry.logging import conditional_observe
 from src.telemetry.reasoning_traces import log_reasoning_trace
+from src.utils.codex_auth import CodexAuthStore
 from src.utils.json_parser import validate_and_repair_json
 from src.utils.representation import PromptRepresentation
 from src.utils.tokens import estimate_tokens
@@ -257,7 +258,14 @@ if settings.LLM.ANTHROPIC_API_KEY:
     )
     CLIENTS["anthropic"] = anthropic
 
-if settings.LLM.OPENAI_API_KEY:
+if settings.LLM.OPENAI_USE_CODEX_AUTH:
+    codex_auth_store = CodexAuthStore(auth_file=settings.LLM.OPENAI_CODEX_AUTH_FILE)
+    openai_client = AsyncOpenAI(
+        api_key=codex_auth_store.get_access_token,
+        base_url=settings.LLM.OPENAI_CODEX_BASE_URL,
+    )
+    CLIENTS["openai"] = openai_client
+elif settings.LLM.OPENAI_API_KEY:
     openai_client = AsyncOpenAI(
         api_key=settings.LLM.OPENAI_API_KEY,
     )
@@ -473,6 +481,311 @@ def extract_openai_cache_tokens(usage: Any) -> tuple[int, int]:
         cache_creation = usage.cache_creation_input_tokens
 
     return cache_creation, cache_read
+
+
+def _should_use_openai_responses_api(provider: SupportedProviders) -> bool:
+    """Enable Responses API only for the native OpenAI provider."""
+    return provider == "openai" and (
+        settings.LLM.OPENAI_USE_RESPONSES_API or settings.LLM.OPENAI_USE_CODEX_AUTH
+    )
+
+
+def _should_use_codex_openai_backend(provider: SupportedProviders) -> bool:
+    """Detect when the native OpenAI provider is pointed at the Codex backend."""
+    return provider == "openai" and settings.LLM.OPENAI_USE_CODEX_AUTH
+
+
+def _convert_openai_chat_tools_to_responses_tools(
+    tools: list[dict[str, Any]] | None,
+) -> list[dict[str, Any]] | None:
+    """Translate Chat Completions tool definitions to Responses API format."""
+    if not tools:
+        return None
+
+    responses_tools: list[dict[str, Any]] = []
+    for tool in tools:
+        fn = tool.get("function")
+        if tool.get("type") == "function" and isinstance(fn, dict):
+            converted: dict[str, Any] = {
+                "type": "function",
+                "name": fn["name"],
+                "parameters": fn.get("parameters", {"type": "object"}),
+            }
+            if fn.get("description"):
+                converted["description"] = fn["description"]
+            if "strict" in fn:
+                converted["strict"] = fn["strict"]
+            responses_tools.append(converted)
+        else:
+            responses_tools.append(tool)
+
+    return responses_tools
+
+
+def _convert_openai_tool_choice_to_responses(
+    tool_choice: str | dict[str, Any] | None,
+) -> str | dict[str, Any] | None:
+    """Convert Honcho/OpenAI tool choice values to Responses API format."""
+    if tool_choice is None:
+        return None
+
+    if isinstance(tool_choice, str):
+        if tool_choice in {"auto", "required", "none"}:
+            return tool_choice
+        return {"type": "function", "name": tool_choice}
+
+    if "function" in tool_choice and isinstance(tool_choice["function"], dict):
+        function = tool_choice["function"]
+        if "name" in function:
+            return {"type": "function", "name": function["name"]}
+
+    return tool_choice
+
+
+def _split_openai_responses_instructions_and_input(
+    messages: list[dict[str, Any]],
+) -> tuple[str | None, list[dict[str, Any]]]:
+    """Split leading system/developer messages into instructions and input items."""
+    remaining_messages = list(messages)
+    instructions_parts: list[str] = []
+
+    while remaining_messages and remaining_messages[0].get("role") in {
+        "system",
+        "developer",
+    }:
+        content = remaining_messages.pop(0).get("content")
+        if isinstance(content, str) and content:
+            instructions_parts.append(content)
+
+    input_items: list[dict[str, Any]] = []
+
+    for msg in remaining_messages:
+        role = msg.get("role")
+        content = msg.get("content")
+
+        if role in {"system", "user", "assistant"}:
+            # Tool-calling turns are represented as standalone function items.
+            if role == "assistant" and msg.get("tool_calls"):
+                if isinstance(content, str) and content:
+                    input_items.append({"role": "assistant", "content": content})
+                elif isinstance(content, list):
+                    text_parts = [
+                        part.get("text", "")
+                        for part in content
+                        if isinstance(part, dict) and part.get("type") == "text"
+                    ]
+                    if text_parts:
+                        input_items.append(
+                            {"role": "assistant", "content": "\n".join(text_parts)}
+                        )
+
+                for tool_call in msg["tool_calls"]:
+                    function = tool_call.get("function", {})
+                    arguments = function.get("arguments", "{}")
+                    if not isinstance(arguments, str):
+                        arguments = json.dumps(arguments)
+                    input_items.append(
+                        {
+                            "type": "function_call",
+                            "call_id": tool_call.get("id", ""),
+                            "name": function.get("name", ""),
+                            "arguments": arguments,
+                        }
+                    )
+                continue
+
+            if isinstance(content, str):
+                input_items.append({"role": role, "content": content})
+                continue
+
+            if isinstance(content, list):
+                text_parts = [
+                    part.get("text", "")
+                    for part in content
+                    if isinstance(part, dict) and part.get("type") == "text"
+                ]
+                if text_parts:
+                    input_items.append({"role": role, "content": "\n".join(text_parts)})
+                continue
+
+        if role == "tool":
+            input_items.append(
+                {
+                    "type": "function_call_output",
+                    "call_id": msg.get("tool_call_id", ""),
+                    "output": content if isinstance(content, str) else json.dumps(content),
+                }
+            )
+
+    instructions = "\n\n".join(part for part in instructions_parts if part)
+    return instructions or None, input_items
+
+
+def _extract_responses_output_text(response: Any) -> str:
+    """Best-effort extraction of text from a Responses API response."""
+    output_text = getattr(response, "output_text", None)
+    if isinstance(output_text, str):
+        return output_text
+
+    text_parts: list[str] = []
+    for item in getattr(response, "output", []) or []:
+        item_type = getattr(item, "type", None)
+
+        if item_type == "message":
+            for content in getattr(item, "content", []) or []:
+                if getattr(content, "type", None) in {"output_text", "text"}:
+                    text = getattr(content, "text", None)
+                    if isinstance(text, str):
+                        text_parts.append(text)
+        elif item_type in {"output_text", "text"}:
+            text = getattr(item, "text", None)
+            if isinstance(text, str):
+                text_parts.append(text)
+
+    return "\n".join(text_parts)
+
+
+def _extract_responses_tool_calls(response: Any) -> list[dict[str, Any]]:
+    """Extract function tool calls from a Responses API response."""
+    tool_calls: list[dict[str, Any]] = []
+
+    for item in getattr(response, "output", []) or []:
+        if getattr(item, "type", None) != "function_call":
+            continue
+
+        arguments = getattr(item, "arguments", None) or "{}"
+        parsed_arguments: dict[str, Any]
+        if isinstance(arguments, str):
+            parsed_arguments = json.loads(arguments) if arguments else {}
+        elif isinstance(arguments, dict):
+            parsed_arguments = arguments
+        else:
+            parsed_arguments = {}
+
+        tool_calls.append(
+            {
+                "id": getattr(item, "call_id", None) or getattr(item, "id", ""),
+                "name": getattr(item, "name", ""),
+                "input": parsed_arguments,
+            }
+        )
+
+    return tool_calls
+
+
+def _extract_responses_usage_tokens(response: Any) -> tuple[int, int]:
+    """Extract input/output tokens from a Responses API response."""
+    usage = getattr(response, "usage", None)
+    if not usage:
+        return 0, 0
+    return (
+        getattr(usage, "input_tokens", 0) or 0,
+        getattr(usage, "output_tokens", 0) or 0,
+    )
+
+
+async def _call_openai_responses_api(
+    client: AsyncOpenAI,
+    *,
+    provider: SupportedProviders,
+    model: str,
+    max_tokens: int,
+    messages: list[dict[str, Any]],
+    response_model: type[BaseModel] | None,
+    json_mode: bool,
+    temperature: float | None,
+    reasoning_effort: Literal["low", "medium", "high", "minimal"] | None,
+    verbosity: Literal["low", "medium", "high"] | None,
+    tools: list[dict[str, Any]] | None,
+    tool_choice: str | dict[str, Any] | None,
+) -> "HonchoLLMCallResponse[Any]":
+    """Call OpenAI's Responses API and normalize the result to Honcho's shape."""
+    is_codex_backend = _should_use_codex_openai_backend(provider)
+    text_config: dict[str, Any] = {}
+    if verbosity:
+        text_config["verbosity"] = verbosity
+
+    if response_model:
+        text_config["format"] = {
+            "type": "json_schema",
+            "name": response_model.__name__,
+            "strict": True,
+            "schema": response_model.model_json_schema(),
+        }
+    elif json_mode:
+        text_config["format"] = {"type": "json_object"}
+
+    instructions, input_items = _split_openai_responses_instructions_and_input(messages)
+    if is_codex_backend and not instructions:
+        instructions = "You are a helpful assistant."
+
+    responses_params: dict[str, Any] = {
+        "model": model,
+        "store": False,
+    }
+    if instructions:
+        responses_params["instructions"] = instructions
+    if input_items:
+        responses_params["input"] = input_items
+    elif instructions:
+        responses_params["input"] = []
+    else:
+        responses_params["input"] = [{"role": "user", "content": ""}]
+
+    if text_config:
+        responses_params["text"] = text_config
+
+    if not is_codex_backend:
+        responses_params["max_output_tokens"] = max_tokens
+
+    if temperature is not None and "gpt-5" not in model and not is_codex_backend:
+        responses_params["temperature"] = temperature
+
+    if reasoning_effort and not is_codex_backend:
+        responses_params["reasoning"] = {"effort": reasoning_effort}
+
+    responses_tools = _convert_openai_chat_tools_to_responses_tools(tools)
+    if responses_tools and not response_model:
+        responses_params["tools"] = responses_tools
+        converted_tool_choice = _convert_openai_tool_choice_to_responses(tool_choice)
+        if converted_tool_choice is not None:
+            responses_params["tool_choice"] = converted_tool_choice
+
+    if is_codex_backend:
+        async with client.responses.stream(**responses_params) as response_stream:
+            response = await response_stream.get_final_response()
+    else:
+        response = await client.responses.create(**responses_params)
+
+    output_text = _extract_responses_output_text(response)
+    tool_calls = _extract_responses_tool_calls(response)
+    input_tokens, output_tokens = _extract_responses_usage_tokens(response)
+
+    if response_model:
+        try:
+            parsed_content = response_model.model_validate_json(output_text)
+        except (ValidationError, ValueError) as e:
+            raise ValueError(
+                f"Failed to parse Responses API output as {response_model}: {e}. Raw content: {output_text}"
+            ) from e
+
+        return HonchoLLMCallResponse(
+            content=parsed_content,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            finish_reasons=[
+                getattr(response, "status", None) or "completed"
+            ],
+            tool_calls_made=tool_calls,
+        )
+
+    return HonchoLLMCallResponse(
+        content=output_text,
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        finish_reasons=[getattr(response, "status", None) or "completed"],
+        tool_calls_made=tool_calls,
+    )
 
 
 class HonchoLLMCallResponse(BaseModel, Generic[T]):
@@ -1664,6 +1977,37 @@ async def honcho_llm_call_inner(
         params["temperature"] = temperature
 
     if stream:
+        if _should_use_openai_responses_api(provider):
+            async def _single_chunk_responses_stream() -> (
+                AsyncIterator[HonchoLLMCallStreamChunk]
+            ):
+                response = await _call_openai_responses_api(
+                    cast(AsyncOpenAI, client),
+                    provider=provider,
+                    model=model,
+                    max_tokens=max_tokens,
+                    messages=messages,
+                    response_model=response_model,
+                    json_mode=json_mode,
+                    temperature=temperature,
+                    reasoning_effort=reasoning_effort,
+                    verbosity=verbosity,
+                    tools=tools,
+                    tool_choice=tool_choice,
+                )
+
+                content = response.content if isinstance(response.content, str) else ""
+                if content:
+                    yield HonchoLLMCallStreamChunk(content=content)
+                yield HonchoLLMCallStreamChunk(
+                    content="",
+                    is_done=True,
+                    finish_reasons=response.finish_reasons,
+                    output_tokens=response.output_tokens,
+                )
+
+            return _single_chunk_responses_stream()
+
         # Return async generator for streaming responses
         return handle_streaming_response(
             client,
@@ -1847,6 +2191,22 @@ async def honcho_llm_call_inner(
             )
 
         case AsyncOpenAI():
+            if _should_use_openai_responses_api(provider):
+                return await _call_openai_responses_api(
+                    client,
+                    provider=provider,
+                    model=params["model"],
+                    max_tokens=params["max_tokens"],
+                    messages=params["messages"],
+                    response_model=response_model,
+                    json_mode=json_mode,
+                    temperature=temperature,
+                    reasoning_effort=reasoning_effort,
+                    verbosity=verbosity,
+                    tools=tools,
+                    tool_choice=tool_choice,
+                )
+
             # For custom providers (e.g., OpenRouter), add cache_control to system messages
             # This enables prompt caching for Anthropic models proxied via OpenAI-compatible APIs
             processed_messages: list[dict[str, Any]] = params["messages"]

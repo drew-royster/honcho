@@ -204,6 +204,10 @@ class LLMSettings(HonchoSettings):
     # API Keys for LLM providers
     ANTHROPIC_API_KEY: str | None = None
     OPENAI_API_KEY: str | None = None
+    OPENAI_USE_RESPONSES_API: bool = False
+    OPENAI_USE_CODEX_AUTH: bool = False
+    OPENAI_CODEX_AUTH_FILE: str | None = None
+    OPENAI_CODEX_BASE_URL: str = "https://chatgpt.com/backend-api/codex"
     OPENAI_COMPATIBLE_API_KEY: str | None = None
     GEMINI_API_KEY: str | None = None
     GROQ_API_KEY: str | None = None

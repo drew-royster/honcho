@@ -41,12 +41,15 @@ RUN addgroup --system app && adduser --system --group app && mkdir -p /tmp/uv-ca
 COPY --chown=app:app src/ /app/src/
 COPY --chown=app:app migrations/ /app/migrations/
 COPY --chown=app:app scripts/ /app/scripts/
+COPY --chown=app:app docker/ /app/docker/
 COPY --chown=app:app alembic.ini /app/alembic.ini
 # Copy config files - this will copy config.toml if it exists, and config.toml.example
 COPY --chown=app:app config.toml* /app/
 
 # Switch to non-root user
 USER app
+
+RUN chmod +x /app/docker/entrypoint.sh
 
 EXPOSE 8000
 

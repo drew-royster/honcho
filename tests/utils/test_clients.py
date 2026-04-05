@@ -45,6 +45,25 @@ class SampleTestModel(BaseModel):
     active: bool = Field(default=True)
 
 
+class FakeResponsesStream:
+    def __init__(self, response: Any):
+        self._response = response
+
+    async def get_final_response(self) -> Any:
+        return self._response
+
+
+class FakeResponsesStreamManager:
+    def __init__(self, response: Any):
+        self._response = response
+
+    async def __aenter__(self) -> FakeResponsesStream:
+        return FakeResponsesStream(self._response)
+
+    async def __aexit__(self, exc_type: Any, exc: Any, exc_tb: Any) -> bool:
+        return False
+
+
 class TestLLMCallResponse:
     """Tests for HonchoLLMCallResponse and HonchoLLMCallStreamChunk models"""
 
@@ -444,6 +463,118 @@ class TestOpenAIClient:
             # Verify parse was called instead of create
             mock_client.chat.completions.parse.assert_called_once()
             mock_client.chat.completions.create.assert_not_called()
+
+    async def test_openai_responses_api_basic_call(self):
+        """Test OpenAI Responses API path behind the env flag."""
+        from openai import AsyncOpenAI
+
+        mock_client = AsyncMock(spec=AsyncOpenAI)
+        mock_response = Mock()
+        mock_response.output_text = "Hello from Responses"
+        mock_response.output = []
+        mock_response.status = "completed"
+        mock_response.usage = Mock(input_tokens=10, output_tokens=6)
+        mock_client.responses.create = AsyncMock(return_value=mock_response)
+
+        with patch.dict(CLIENTS, {"openai": mock_client}):
+            with patch.object(settings.LLM, "OPENAI_USE_RESPONSES_API", True):
+                response = await honcho_llm_call_inner(
+                    provider="openai",
+                    model="gpt-5",
+                    prompt="Hello",
+                    max_tokens=100,
+                )
+
+                assert isinstance(response, HonchoLLMCallResponse)
+                assert response.content == "Hello from Responses"
+                assert response.input_tokens == 10
+                assert response.output_tokens == 6
+                assert response.finish_reasons == ["completed"]
+
+                mock_client.responses.create.assert_called_once()
+                call_args = mock_client.responses.create.call_args
+                assert call_args.kwargs["store"] is False
+                assert call_args.kwargs["input"] == [{"role": "user", "content": "Hello"}]
+                mock_client.chat.completions.create.assert_not_called()
+
+    async def test_openai_responses_api_response_model(self):
+        """Test Responses API structured output parsing."""
+        from openai import AsyncOpenAI
+
+        mock_client = AsyncMock(spec=AsyncOpenAI)
+        mock_response = Mock()
+        mock_response.output_text = '{"name":"Jane","age":54,"active":true}'
+        mock_response.output = []
+        mock_response.status = "completed"
+        mock_response.usage = Mock(input_tokens=12, output_tokens=8)
+        mock_client.responses.create = AsyncMock(return_value=mock_response)
+
+        with patch.dict(CLIENTS, {"openai": mock_client}):
+            with patch.object(settings.LLM, "OPENAI_USE_RESPONSES_API", True):
+                response = await honcho_llm_call_inner(
+                    provider="openai",
+                    model="gpt-5",
+                    prompt="Jane, 54 years old",
+                    max_tokens=100,
+                    response_model=SampleTestModel,
+                )
+
+                assert isinstance(response.content, SampleTestModel)
+                assert response.content.name == "Jane"
+                assert response.content.age == 54
+
+                call_args = mock_client.responses.create.call_args
+                assert call_args.kwargs["text"]["format"]["type"] == "json_schema"
+                assert (
+                    call_args.kwargs["text"]["format"]["name"]
+                    == SampleTestModel.__name__
+                )
+
+    async def test_openai_codex_backend_uses_responses_stream(self):
+        """Test Codex-backed OpenAI mode uses the chatgpt.com Responses stream path."""
+        from openai import AsyncOpenAI
+
+        mock_client = AsyncMock(spec=AsyncOpenAI)
+        mock_client.responses = Mock()
+        mock_response = Mock()
+        mock_response.output_text = "Hello from Codex backend"
+        mock_response.output = []
+        mock_response.status = "completed"
+        mock_response.usage = Mock(input_tokens=9, output_tokens=4)
+        mock_client.responses.stream = Mock(
+            return_value=FakeResponsesStreamManager(mock_response)
+        )
+        mock_client.responses.create = AsyncMock()
+
+        with patch.dict(CLIENTS, {"openai": mock_client}):
+            with (
+                patch.object(settings.LLM, "OPENAI_USE_CODEX_AUTH", True),
+                patch.object(settings.LLM, "OPENAI_USE_RESPONSES_API", False),
+            ):
+                response = await honcho_llm_call_inner(
+                    provider="openai",
+                    model="gpt-5.3-codex",
+                    prompt="Hello",
+                    max_tokens=100,
+                    messages=[
+                        {"role": "system", "content": "Be concise."},
+                        {"role": "user", "content": "Hello"},
+                    ],
+                )
+
+                assert isinstance(response, HonchoLLMCallResponse)
+                assert response.content == "Hello from Codex backend"
+                assert response.input_tokens == 9
+                assert response.output_tokens == 4
+
+                mock_client.responses.stream.assert_called_once()
+                call_args = mock_client.responses.stream.call_args
+                assert call_args.kwargs["instructions"] == "Be concise."
+                assert call_args.kwargs["input"] == [
+                    {"role": "user", "content": "Hello"}
+                ]
+                assert "max_output_tokens" not in call_args.kwargs
+                mock_client.responses.create.assert_not_called()
 
     async def test_openai_streaming(self):
         """Test OpenAI streaming response"""
