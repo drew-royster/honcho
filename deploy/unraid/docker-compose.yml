@@ -1,0 +1,57 @@
+name: honcho-codex
+
+services:
+  api:
+    container_name: honcho_api
+    image: honcho-codex:latest
+    build:
+      context: ${HONCHO_SOURCE_DIR}
+      dockerfile: Dockerfile
+    entrypoint: ["sh", "/app/docker/entrypoint.sh"]
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    ports:
+      - "${HONCHO_API_PORT}:8000"
+    env_file:
+      - .env
+    environment:
+      DB_CONNECTION_URI: postgresql+psycopg://postgres:${HONCHO_DB_PASSWORD}@postgres:5432/postgres
+      CACHE_URL: redis://redis:6379/0?suppress=true
+    volumes:
+      - ${HONCHO_CODEX_DIR}:/config/codex
+      - /etc/localtime:/etc/localtime:ro
+
+  postgres:
+    container_name: honcho_postgres
+    image: pgvector/pgvector:pg15
+    restart: unless-stopped
+    command: ["postgres", "-c", "max_connections=200"]
+    environment:
+      POSTGRES_DB: postgres
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${HONCHO_DB_PASSWORD}
+      PGDATA: /var/lib/postgresql/data/pgdata
+    volumes:
+      - ${HONCHO_DB_DATA}:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
+  redis:
+    container_name: honcho_redis
+    image: redis:8.2
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - ${HONCHO_REDIS_DATA}:/data
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
