@@ -4,7 +4,6 @@ from typing import Any, final
 
 from dotenv import load_dotenv
 from nanoid import generate as generate_nanoid
-from pgvector.sqlalchemy import Vector
 from sqlalchemy import (
     BigInteger,
     Boolean,
@@ -13,19 +12,24 @@ from sqlalchemy import (
     DateTime,
     ForeignKey,
     ForeignKeyConstraint,
-    Identity,
     Index,
     Integer,
     Table,
     UniqueConstraint,
     text,
 )
-from sqlalchemy.dialects.postgresql import JSONB, TEXT
+from sqlalchemy import JSON, TEXT
 from sqlalchemy.orm import Mapped, MappedColumn, mapped_column, relationship
 from sqlalchemy.sql import func
 from typing_extensions import override
 
 from .config import settings
+from .db_compat import (
+    EMBEDDING_TYPE,
+    IS_SQLITE,
+    empty_json_object_default,
+    id_format_check,
+)
 from src.utils.types import DocumentLevel, TaskType, VectorSyncState
 
 from .db import Base
@@ -55,17 +59,17 @@ session_peers_table = Table(
     Column("peer_name", TEXT, primary_key=True, nullable=False),
     Column(
         "configuration",
-        JSONB,
+        JSON,
         default=dict,
         nullable=False,
-        server_default=text("'{}'::jsonb"),
+        server_default=empty_json_object_default(),
     ),
     Column(
         "internal_metadata",
-        JSONB,
+        JSON,
         default=dict,
         nullable=False,
-        server_default=text("'{}'::jsonb"),
+        server_default=empty_json_object_default(),
     ),
     Column(
         "joined_at",
@@ -100,13 +104,13 @@ class Workspace(Base):
         DateTime(timezone=True), server_default=func.now(), index=True
     )
     h_metadata: Mapped[dict[str, Any]] = mapped_column(
-        "metadata", JSONB, default=dict, server_default=text("'{}'::jsonb")
+        "metadata", JSON, default=dict, server_default=empty_json_object_default()
     )
     internal_metadata: Mapped[dict[str, Any]] = mapped_column(
-        "internal_metadata", JSONB, default=dict, server_default=text("'{}'::jsonb")
+        "internal_metadata", JSON, default=dict, server_default=empty_json_object_default()
     )
     configuration: Mapped[dict[str, Any]] = mapped_column(
-        JSONB, default=dict, server_default=text("'{}'::jsonb")
+        JSON, default=dict, server_default=empty_json_object_default()
     )
 
     sessions = relationship(
@@ -117,10 +121,14 @@ class Workspace(Base):
     )
     webhook_endpoints = relationship("WebhookEndpoint", back_populates="workspace")
 
-    __table_args__ = (
+    __table_args__ = tuple(
+        arg
+        for arg in (
         CheckConstraint("length(id) = 21", name="id_length"),
         CheckConstraint("length(name) <= 512", name="name_length"),
-        CheckConstraint("id ~ '^[A-Za-z0-9_-]+$'", name="id_format"),
+        id_format_check("id"),
+        )
+        if arg is not None
     )
 
 
@@ -130,10 +138,10 @@ class Peer(Base):
     id: Mapped[str] = mapped_column(TEXT, default=generate_nanoid, primary_key=True)
     name: Mapped[str] = mapped_column(TEXT, nullable=False)
     h_metadata: Mapped[dict[str, Any]] = mapped_column(
-        "metadata", JSONB, default=dict, server_default=text("'{}'::jsonb")
+        "metadata", JSON, default=dict, server_default=empty_json_object_default()
     )
     internal_metadata: Mapped[dict[str, Any]] = mapped_column(
-        "internal_metadata", JSONB, default=dict, server_default=text("'{}'::jsonb")
+        "internal_metadata", JSON, default=dict, server_default=empty_json_object_default()
     )
     created_at: Mapped[datetime.datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), index=True
@@ -142,7 +150,7 @@ class Peer(Base):
         ForeignKey("workspaces.name"), nullable=False, index=True
     )
     configuration: Mapped[dict[str, Any]] = mapped_column(
-        JSONB, default=dict, server_default=text("'{}'::jsonb")
+        JSON, default=dict, server_default=empty_json_object_default()
     )
 
     workspace = relationship("Workspace", back_populates="peers")
@@ -150,11 +158,15 @@ class Peer(Base):
         "Session", secondary=session_peers_table, back_populates="peers"
     )
 
-    __table_args__ = (
+    __table_args__ = tuple(
+        arg
+        for arg in (
         UniqueConstraint("name", "workspace_name"),
         CheckConstraint("length(id) = 21", name="id_length"),
         CheckConstraint("length(name) <= 512", name="name_length"),
-        CheckConstraint("id ~ '^[A-Za-z0-9_-]+$'", name="id_format"),
+        id_format_check("id"),
+        )
+        if arg is not None
     )
 
     def __repr__(self) -> str:
@@ -168,10 +180,10 @@ class Session(Base):
     name: Mapped[str] = mapped_column(TEXT)
     is_active: Mapped[bool] = mapped_column(default=True, server_default=text("true"))
     h_metadata: Mapped[dict[str, Any]] = mapped_column(
-        "metadata", JSONB, default=dict, server_default=text("'{}'::jsonb")
+        "metadata", JSON, default=dict, server_default=empty_json_object_default()
     )
     internal_metadata: Mapped[dict[str, Any]] = mapped_column(
-        "internal_metadata", JSONB, default=dict, server_default=text("'{}'::jsonb")
+        "internal_metadata", JSON, default=dict, server_default=empty_json_object_default()
     )
     created_at: Mapped[datetime.datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), index=True
@@ -180,7 +192,7 @@ class Session(Base):
         ForeignKey("workspaces.name"), nullable=False, index=True
     )
     configuration: Mapped[dict[str, Any]] = mapped_column(
-        JSONB, default=dict, server_default=text("'{}'::jsonb")
+        JSON, default=dict, server_default=empty_json_object_default()
     )
 
     workspace = relationship("Workspace", back_populates="sessions")
@@ -189,11 +201,15 @@ class Session(Base):
     )
     messages = relationship("Message", back_populates="session")
 
-    __table_args__ = (
+    __table_args__ = tuple(
+        arg
+        for arg in (
         UniqueConstraint("name", "workspace_name"),
         CheckConstraint("length(name) <= 512", name="name_length"),
         CheckConstraint("length(id) = 21", name="id_length"),
-        CheckConstraint("id ~ '^[A-Za-z0-9_-]+$'", name="id_format"),
+        id_format_check("id"),
+        )
+        if arg is not None
     )
 
     def __repr__(self) -> str:
@@ -204,7 +220,9 @@ class Session(Base):
 class Message(Base):
     __tablename__: str = "messages"
     id: Mapped[int] = mapped_column(
-        BigInteger, Identity(), primary_key=True, autoincrement=True
+        Integer if IS_SQLITE else BigInteger,
+        primary_key=True,
+        autoincrement=True,
     )
     public_id: Mapped[str] = mapped_column(
         TEXT,
@@ -216,10 +234,10 @@ class Message(Base):
     session_name: Mapped[str] = mapped_column(TEXT, nullable=False)
     content: Mapped[str] = mapped_column(TEXT)
     h_metadata: Mapped[dict[str, Any]] = mapped_column(
-        "metadata", JSONB, default=dict, server_default=text("'{}'::jsonb")
+        "metadata", JSON, default=dict, server_default=empty_json_object_default()
     )
     internal_metadata: Mapped[dict[str, Any]] = mapped_column(
-        "internal_metadata", JSONB, default=dict, server_default=text("'{}'::jsonb")
+        "internal_metadata", JSON, default=dict, server_default=empty_json_object_default()
     )
     token_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     seq_in_session: Mapped[int] = mapped_column(BigInteger, nullable=False)
@@ -233,9 +251,11 @@ class Message(Base):
 
     session = relationship("Session", back_populates="messages")
 
-    __table_args__ = (
+    __table_args__ = tuple(
+        arg
+        for arg in (
         CheckConstraint("length(public_id) = 21", name="public_id_length"),
-        CheckConstraint("public_id ~ '^[A-Za-z0-9_-]+$'", name="public_id_format"),
+        id_format_check("public_id", name="public_id_format"),
         CheckConstraint("length(content) <= 65535", name="content_length"),
         # Composite foreign key constraint for sessions
         ForeignKeyConstraint(
@@ -263,7 +283,11 @@ class Message(Base):
             "ix_messages_content_gin",
             text("to_tsvector('english', content)"),
             postgresql_using="gin",
-        ),
+        )
+        if not IS_SQLITE
+        else None,
+        )
+        if arg is not None
     )
 
     @override
@@ -276,11 +300,13 @@ class MessageEmbedding(Base):
     __tablename__: str = "message_embeddings"
 
     id: Mapped[int] = mapped_column(
-        BigInteger, Identity(), primary_key=True, autoincrement=True
+        Integer if IS_SQLITE else BigInteger,
+        primary_key=True,
+        autoincrement=True,
     )
     content: Mapped[str] = mapped_column(TEXT)
     embedding: MappedColumn[Any] = mapped_column(
-        Vector(settings.VECTOR_STORE.DIMENSIONS), nullable=True
+        EMBEDDING_TYPE, nullable=True
     )
     message_id: Mapped[str] = mapped_column(
         ForeignKey("messages.public_id", ondelete="CASCADE"), nullable=False, index=True
@@ -304,7 +330,9 @@ class MessageEmbedding(Base):
         Integer, nullable=False, default=0, server_default=text("0")
     )
 
-    __table_args__ = (
+    __table_args__ = tuple(
+        arg
+        for arg in (
         # Compound foreign key constraints
         ForeignKeyConstraint(
             ["session_name", "workspace_name"],
@@ -321,13 +349,17 @@ class MessageEmbedding(Base):
             postgresql_using="hnsw",
             postgresql_with={"m": 16, "ef_construction": 64},
             postgresql_ops={"embedding": "vector_cosine_ops"},
-        ),
+        )
+        if not IS_SQLITE
+        else None,
         # Composite index for efficient reconciliation queries
         Index(
             "ix_message_embeddings_sync_state_last_sync_at",
             "sync_state",
             "last_sync_at",
         ),
+        )
+        if arg is not None
     )
 
 
@@ -342,10 +374,10 @@ class Collection(Base):
         DateTime(timezone=True), server_default=func.now(), index=True
     )
     h_metadata: Mapped[dict[str, Any]] = mapped_column(
-        "metadata", JSONB, default=dict, server_default=text("'{}'::jsonb")
+        "metadata", JSON, default=dict, server_default=empty_json_object_default()
     )
     internal_metadata: Mapped[dict[str, Any]] = mapped_column(
-        "internal_metadata", JSONB, default=dict, server_default=text("'{}'::jsonb")
+        "internal_metadata", JSON, default=dict, server_default=empty_json_object_default()
     )
     documents = relationship(
         "Document", back_populates="collection", cascade="all, delete, delete-orphan"
@@ -354,14 +386,16 @@ class Collection(Base):
         ForeignKey("workspaces.name"), nullable=False, index=True
     )
 
-    __table_args__ = (
+    __table_args__ = tuple(
+        arg
+        for arg in (
         UniqueConstraint(
             "observer",
             "observed",
             "workspace_name",
         ),
         CheckConstraint("length(id) = 21", name="id_length"),
-        CheckConstraint("id ~ '^[A-Za-z0-9_-]+$'", name="id_format"),
+        id_format_check("id"),
         # Composite foreign key constraint for observer peer
         ForeignKeyConstraint(
             ["observer", "workspace_name"],
@@ -372,6 +406,8 @@ class Collection(Base):
             ["observed", "workspace_name"],
             ["peers.name", "peers.workspace_name"],
         ),
+        )
+        if arg is not None
     )
 
 
@@ -380,7 +416,7 @@ class Document(Base):
     __tablename__: str = "documents"
     id: Mapped[str] = mapped_column(TEXT, default=generate_nanoid, primary_key=True)
     internal_metadata: Mapped[dict[str, Any]] = mapped_column(
-        "internal_metadata", JSONB, default=dict, server_default=text("'{}'::jsonb")
+        "internal_metadata", JSON, default=dict, server_default=empty_json_object_default()
     )
     content: Mapped[str] = mapped_column(TEXT)
     level: Mapped[DocumentLevel] = mapped_column(
@@ -390,11 +426,9 @@ class Document(Base):
         Integer, nullable=False, server_default=text("1")
     )
     embedding: MappedColumn[Any] = mapped_column(
-        Vector(settings.VECTOR_STORE.DIMENSIONS), nullable=True
+        EMBEDDING_TYPE, nullable=True
     )
-    source_ids: Mapped[list[str] | None] = mapped_column(
-        JSONB, nullable=True, server_default=text("NULL")
-    )
+    source_ids: Mapped[list[str] | None] = mapped_column(JSON, nullable=True, server_default=text("NULL"))
     created_at: Mapped[datetime.datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), index=True
     )
@@ -422,10 +456,12 @@ class Document(Base):
 
     collection = relationship("Collection", back_populates="documents")
 
-    __table_args__ = (
+    __table_args__ = tuple(
+        arg
+        for arg in (
         CheckConstraint("length(id) = 21", name="id_length"),
         CheckConstraint("length(content) <= 65535", name="content_length"),
-        CheckConstraint("id ~ '^[A-Za-z0-9_-]+$'", name="id_format"),
+        id_format_check("id"),
         # Composite foreign key constraint for collections
         ForeignKeyConstraint(
             ["observer", "observed", "workspace_name"],
@@ -459,19 +495,25 @@ class Document(Base):
             postgresql_ops={
                 "embedding": "vector_cosine_ops"
             },  # Cosine distance operator
-        ),
+        )
+        if not IS_SQLITE
+        else None,
         # GIN index for efficient tree traversal (finding children by source IDs)
         Index(
             "ix_documents_source_ids_gin",
             "source_ids",
             postgresql_using="gin",
-        ),
+        )
+        if not IS_SQLITE
+        else None,
         # Composite index for efficient reconciliation queries
         Index(
             "ix_documents_sync_state_last_sync_at",
             "sync_state",
             "last_sync_at",
         ),
+        )
+        if arg is not None
     )
 
 
@@ -479,7 +521,9 @@ class Document(Base):
 class QueueItem(Base):
     __tablename__: str = "queue"
     id: Mapped[int] = mapped_column(
-        BigInteger, Identity(), primary_key=True, autoincrement=True
+        Integer if IS_SQLITE else BigInteger,
+        primary_key=True,
+        autoincrement=True,
     )
     session_id: Mapped[str | None] = mapped_column(
         ForeignKey("sessions.id"), nullable=True, index=True
@@ -487,7 +531,7 @@ class QueueItem(Base):
     work_unit_key: Mapped[str] = mapped_column(TEXT, nullable=False)
 
     task_type: Mapped[TaskType] = mapped_column(TEXT, nullable=False)
-    payload: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    payload: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
     processed: Mapped[bool] = mapped_column(
         Boolean, default=False, server_default=text("false"), index=True
     )
@@ -502,11 +546,14 @@ class QueueItem(Base):
         BigInteger, ForeignKey("messages.id"), nullable=True
     )
 
-    __table_args__ = (
+    __table_args__ = tuple(
+        arg
+        for arg in (
         Index(
             "ix_queue_message_id_not_null",
             "message_id",
             postgresql_where=text("message_id IS NOT NULL"),
+            sqlite_where=text("message_id IS NOT NULL"),
         ),
         Index(
             "ix_queue_work_unit_key_processed_id",
@@ -520,6 +567,7 @@ class QueueItem(Base):
             "work_unit_key",
             unique=True,
             postgresql_where=text("task_type = 'reconciler' AND processed = false"),
+            sqlite_where=text("task_type = 'reconciler' AND processed = 0"),
         ),
         # Partial unique index for dream task deduplication
         Index(
@@ -527,7 +575,10 @@ class QueueItem(Base):
             "work_unit_key",
             unique=True,
             postgresql_where=text("task_type = 'dream' AND processed = false"),
+            sqlite_where=text("task_type = 'dream' AND processed = 0"),
         ),
+        )
+        if arg is not None
     )
 
     def __repr__(self) -> str:

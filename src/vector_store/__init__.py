@@ -205,6 +205,10 @@ def _create_store_by_type(store_type: str) -> VectorStore:
         from src.vector_store.lancedb import LanceDBVectorStore
 
         return LanceDBVectorStore()
+    elif store_type == "sqlite_vec":
+        from src.vector_store.sqlite_vec import SQLiteVecVectorStore
+
+        return SQLiteVecVectorStore()
     else:
         raise ValueError(f"Unknown vector store type: {store_type}")
 

@@ -155,10 +155,8 @@ class BackupLLMSettingsMixin:
 class DBSettings(HonchoSettings):
     model_config = SettingsConfigDict(env_prefix="DB_", extra="ignore")  # pyright: ignore
 
-    CONNECTION_URI: str = (
-        "postgresql+psycopg://postgres:postgres@localhost:5432/postgres"
-    )
-    SCHEMA: str = "public"
+    CONNECTION_URI: str = "sqlite+aiosqlite:///./honcho.db"
+    SCHEMA: str = "main"
     POOL_CLASS: str = "default"
     POOL_PRE_PING: bool = True
     POOL_SIZE: Annotated[int, Field(default=10, gt=0, le=1000)] = 10
@@ -587,9 +585,9 @@ class VectorStoreSettings(HonchoSettings):
     model_config = SettingsConfigDict(env_prefix="VECTOR_STORE_", extra="ignore")  # pyright: ignore
 
     # Vector store type to use
-    TYPE: Literal["pgvector", "turbopuffer", "lancedb"] = "pgvector"
+    TYPE: Literal["pgvector", "turbopuffer", "lancedb", "sqlite_vec"] = "sqlite_vec"
 
-    MIGRATED: bool = False
+    MIGRATED: bool = True
 
     # Global namespace prefix for all vector namespaces
     # Namespaces follow the pattern: {NAMESPACE}.{type}.{hash}
@@ -612,6 +610,9 @@ class VectorStoreSettings(HonchoSettings):
 
     # LanceDB-specific settings (local embedded mode)
     LANCEDB_PATH: str = "./lancedb_data"
+
+    # sqlite-vec specific settings
+    SQLITE_PATH: str = "./honcho.db"
 
     RECONCILIATION_INTERVAL_SECONDS: Annotated[int, Field(default=300, gt=0)] = (
         300  # 5 minutes

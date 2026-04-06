@@ -7,6 +7,7 @@ from sqlalchemy.engine import Row
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src import models, schemas
+from src.db_compat import json_path_text
 
 logger = getLogger(__name__)
 
@@ -87,8 +88,8 @@ def _build_queue_status_query(
     observed: str | None = None,
 ) -> Select[Any]:
     """Build SQL query for queue status with validation and aggregation."""
-    observer_name_expr = models.QueueItem.payload["observer"].astext
-    observed_name_expr = models.QueueItem.payload["observed"].astext
+    observer_name_expr = json_path_text(models.QueueItem.payload, "observer")
+    observed_name_expr = json_path_text(models.QueueItem.payload, "observed")
 
     # Define conditions for cleaner window functions
     is_completed = models.QueueItem.processed

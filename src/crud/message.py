@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src import models, schemas
 from src.config import settings
+from src.db_compat import IS_SQLITE
 from src.embedding_client import embedding_client
 from src.utils.filter import apply_filter
 from src.utils.formatting import ILIKE_ESCAPE_CHAR, escape_ilike_pattern
@@ -181,13 +182,14 @@ async def create_messages(
         workspace_name=workspace_name,
     )
 
-    await db.execute(text("SET LOCAL lock_timeout = '5s'"))
-    await db.execute(
-        text(
-            "SELECT pg_advisory_xact_lock(hashtext(:workspace_name), hashtext(:session_name))"
-        ),
-        {"workspace_name": workspace_name, "session_name": session_name},
-    )
+    if not IS_SQLITE:
+        await db.execute(text("SET LOCAL lock_timeout = '5s'"))
+        await db.execute(
+            text(
+                "SELECT pg_advisory_xact_lock(hashtext(:workspace_name), hashtext(:session_name))"
+            ),
+            {"workspace_name": workspace_name, "session_name": session_name},
+        )
 
     # Get the last sequence number on a session - uses (workspace_name, session_name, seq_in_session) index
     last_seq = (

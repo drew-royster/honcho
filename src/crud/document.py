@@ -12,6 +12,7 @@ from sqlalchemy.sql.functions import func
 
 from src import models, schemas
 from src.config import settings
+from src.db_compat import IS_SQLITE
 from src.crud.collection import get_or_create_collection
 from src.crud.peer import get_peer
 from src.crud.session import get_session
@@ -991,8 +992,9 @@ async def cleanup_soft_deleted_documents(
         .where(models.Document.deleted_at.is_not(None))
         .where(models.Document.deleted_at < cutoff)
         .limit(batch_size)
-        .with_for_update(skip_locked=True)
     )
+    if not IS_SQLITE:
+        stmt = stmt.with_for_update(skip_locked=True)
     result = await db.execute(stmt)
     documents = list(result.scalars().all())
 

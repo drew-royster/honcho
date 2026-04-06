@@ -11,7 +11,8 @@ from dotenv import load_dotenv
 from nanoid import generate as generate_nanoid
 from sentry_sdk.integrations.asyncio import AsyncioIntegration
 from sqlalchemy import and_, delete, or_, select, update
-from sqlalchemy.dialects.postgresql import insert
+from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.sql import func
@@ -19,6 +20,7 @@ from sqlalchemy.sql import func
 from src import models
 from src.cache.client import close_cache, init_cache
 from src.config import settings
+from src.db_compat import IS_SQLITE
 from src.dependencies import tracked_db
 from src.deriver.consumer import (
     process_item,
@@ -194,10 +196,17 @@ class QueueManager:
             stale_ids = (
                 (
                     await db.execute(
-                        select(models.ActiveQueueSession.id)
-                        .where(models.ActiveQueueSession.last_updated < cutoff)
-                        .order_by(models.ActiveQueueSession.last_updated)
-                        .with_for_update(skip_locked=True)
+                        (
+                            select(models.ActiveQueueSession.id)
+                            .where(models.ActiveQueueSession.last_updated < cutoff)
+                            .order_by(models.ActiveQueueSession.last_updated)
+                        ).with_for_update(skip_locked=True)
+                        if not IS_SQLITE
+                        else (
+                            select(models.ActiveQueueSession.id)
+                            .where(models.ActiveQueueSession.last_updated < cutoff)
+                            .order_by(models.ActiveQueueSession.last_updated)
+                        )
                     )
                 )
                 .scalars()
@@ -299,8 +308,9 @@ class QueueManager:
         """
         values = [{"work_unit_key": key} for key in work_unit_keys]
 
+        insert_fn = sqlite_insert if IS_SQLITE else pg_insert
         stmt = (
-            insert(models.ActiveQueueSession)
+            insert_fn(models.ActiveQueueSession)
             .values(values)
             .on_conflict_do_nothing()
             .returning(

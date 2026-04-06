@@ -6,8 +6,9 @@ from sqlalchemy.orm import declarative_base
 from sqlalchemy.pool import NullPool
 
 from src.config import settings
+from src.db_compat import IS_SQLITE
 
-connect_args = {"prepare_threshold": None}
+connect_args = {} if IS_SQLITE else {"prepare_threshold": None}
 
 # Context variable to store request context
 request_context: contextvars.ContextVar[str | None] = contextvars.ContextVar(
@@ -16,7 +17,9 @@ request_context: contextvars.ContextVar[str | None] = contextvars.ContextVar(
 
 engine_kwargs = {}
 
-if settings.DB.POOL_CLASS == "null":
+if IS_SQLITE:
+    engine_kwargs = {}
+elif settings.DB.POOL_CLASS == "null":
     engine_kwargs["poolclass"] = NullPool
 else:
     # Only add pool-related kwargs for pooled connections
@@ -58,12 +61,23 @@ table_schema = settings.DB.SCHEMA
 # Note: column_0_N_name expands to include all columns in multi-column constraints
 # e.g., "workspace_id_tenant_id" for a composite constraint on both columns
 meta = MetaData(naming_convention=convention)
-meta.schema = table_schema
+meta.schema = None if IS_SQLITE else table_schema
 Base = declarative_base(metadata=meta)
 
 
 async def init_db():
-    """Initialize the database using Alembic migrations"""
+    """Initialize the database."""
+    if IS_SQLITE:
+        # Ensure model metadata is fully registered before create_all().
+        from src import models  # noqa: F401
+
+        async with engine.begin() as connection:
+            await connection.execute(text("PRAGMA foreign_keys=ON"))
+            await connection.run_sync(Base.metadata.create_all)
+        return
+
+    # PostgreSQL path uses Alembic migrations.
+    from src import models  # noqa: F401
     from alembic import command
     from alembic.config import Config
 

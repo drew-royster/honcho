@@ -163,19 +163,11 @@ async def update_collection_internal_metadata(
     observed: str,
     update_data: dict[str, Any],
 ) -> None:
-    """Merge a patch into a collection's internal_metadata (JSONB ||) and invalidate cache."""
-    stmt = (
-        update(models.Collection)
-        .where(
-            models.Collection.workspace_name == workspace_name,
-            models.Collection.observer == observer,
-            models.Collection.observed == observed,
-        )
-        .values(
-            internal_metadata=models.Collection.internal_metadata.op("||")(update_data)
-        )
-    )
-    await db.execute(stmt)
+    """Merge a patch into a collection's internal_metadata and invalidate cache."""
+    collection = await get_collection(db, workspace_name, observer=observer, observed=observed)
+    merged = dict(collection.internal_metadata or {})
+    merged.update(update_data)
+    collection.internal_metadata = merged
     await db.commit()
 
     await safe_cache_delete(collection_cache_key(workspace_name, observer, observed))

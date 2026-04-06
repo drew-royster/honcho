@@ -292,37 +292,16 @@ if settings.LLM.GROQ_API_KEY:
     groq = AsyncGroq(api_key=settings.LLM.GROQ_API_KEY)
     CLIENTS["groq"] = groq
 
-SELECTED_PROVIDERS = [
-    ("Summary", settings.SUMMARY.PROVIDER),
-    ("Deriver", settings.DERIVER.PROVIDER),
-]
-
-# Add all dialectic level providers
-for level, level_settings in settings.DIALECTIC.LEVELS.items():
-    SELECTED_PROVIDERS.append((f"Dialectic ({level})", level_settings.PROVIDER))
-
-for provider_name, provider_value in SELECTED_PROVIDERS:
-    if provider_value not in CLIENTS:
-        raise ValueError(f"Missing client for {provider_name}: {provider_value}")
-
-# Validate backup providers are initialized if configured
-BACKUP_PROVIDERS: list[tuple[str, SupportedProviders | None]] = [
-    ("Deriver", settings.DERIVER.BACKUP_PROVIDER),
-    ("Summary", settings.SUMMARY.BACKUP_PROVIDER),
-    ("Dream", settings.DREAM.BACKUP_PROVIDER),
-]
-
-# Add all dialectic level backup providers
-for level, level_settings in settings.DIALECTIC.LEVELS.items():
-    BACKUP_PROVIDERS.append((f"Dialectic ({level})", level_settings.BACKUP_PROVIDER))
-
-for component_name, backup_provider in BACKUP_PROVIDERS:
-    if backup_provider is not None and backup_provider not in CLIENTS:
+def _require_client(provider: SupportedProviders) -> (
+    AsyncAnthropic | AsyncOpenAI | genai.Client | AsyncGroq
+):
+    client = CLIENTS.get(provider)
+    if client is None:
         raise ValueError(
-            f"Backup provider for {component_name} is set to {backup_provider}, "
-            + "but this provider is not initialized. Please set the required API key/URL environment "
-            + "variables or remove the backup configuration."
+            f"Missing client for provider '{provider}'. Set the required auth/config "
+            "for the provider before invoking this path."
         )
+    return client
 
 
 def convert_tools_for_provider(
@@ -1980,7 +1959,7 @@ async def honcho_llm_call_inner(
     messages: list[dict[str, Any]] | None = None,
 ) -> HonchoLLMCallResponse[Any] | AsyncIterator[HonchoLLMCallStreamChunk]:
     # has already been validated by honcho_llm_call
-    client = CLIENTS[provider]
+    client = _require_client(provider)
 
     # Use messages if provided, otherwise convert prompt to message
     if messages is None:

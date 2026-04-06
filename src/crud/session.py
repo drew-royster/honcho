@@ -7,6 +7,7 @@ from cashews import NOT_NONE
 from nanoid import generate as generate_nanoid
 from sqlalchemy import Select, and_, case, cast, delete, func, insert, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.engine import CursorResult
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -14,6 +15,7 @@ from sqlalchemy.orm import make_transient_to_detached
 from sqlalchemy.types import BigInteger, Boolean
 
 from src import models, schemas
+from src.db_compat import IS_SQLITE, json_path_bool
 from src.cache.client import (
     cache,
     get_cache_namespace,
@@ -951,9 +953,7 @@ async def _get_or_add_peers_to_session(
             models.SessionPeer.peer_name.notin_(
                 peer_names.keys()
             ),  # Exclude peers being updated
-            models.SessionPeer.configuration["observe_others"].astext.cast(
-                Boolean
-            ),  # Only observers
+            json_path_bool(models.SessionPeer.configuration, "observe_others"),
         )
         result = await db.execute(existing_observers_stmt)
         existing_observer_count = result.scalar() or 0
@@ -964,7 +964,8 @@ async def _get_or_add_peers_to_session(
             raise ObserverException(session_name, total_observers)
 
     # Use upsert to handle both new peers and rejoining peers
-    stmt = pg_insert(models.SessionPeer).values(
+    insert_fn = sqlite_insert if IS_SQLITE else pg_insert
+    stmt = insert_fn(models.SessionPeer).values(
         [
             {
                 "session_name": session_name,
@@ -1096,9 +1097,7 @@ async def set_peer_config(
                 models.SessionPeer.left_at.is_(None),  # Only active peers
                 models.SessionPeer.peer_name
                 != peer_name,  # Exclude the peer being updated
-                models.SessionPeer.configuration["observe_others"].astext.cast(
-                    Boolean
-                ),  # Only observers
+                json_path_bool(models.SessionPeer.configuration, "observe_others"),
             )
             result = await db.execute(existing_observers_stmt)
             observer_count = result.scalar() or 0

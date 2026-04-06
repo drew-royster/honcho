@@ -3,8 +3,6 @@ from __future__ import annotations
 import logging
 from typing import Any, cast
 
-from sqlalchemy import update
-from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src import exceptions, models, schemas
@@ -73,25 +71,10 @@ async def set_peer_card(
         db, workspace_name, [schemas.PeerCreate(name=observer)]
     )
 
-    stmt = (
-        update(models.Peer)
-        .where(models.Peer.workspace_name == workspace_name)
-        .where(models.Peer.name == observer)
-        .values(
-            internal_metadata=models.Peer.internal_metadata.op("||")(
-                {
-                    construct_peer_card_label(
-                        observer=observer, observed=observed
-                    ): peer_card
-                }
-            )
-        )
-    )
-    result = cast(CursorResult[Any], await db.execute(stmt))
-    if result.rowcount == 0:
-        raise exceptions.ResourceNotFoundException(
-            f"Peer {observer} not found in workspace {workspace_name}"
-        )
+    peer = await get_peer(db, workspace_name, schemas.PeerCreate(name=observer))
+    merged = dict(peer.internal_metadata or {})
+    merged[construct_peer_card_label(observer=observer, observed=observed)] = peer_card
+    peer.internal_metadata = merged
     await db.commit()
     await peers_result.post_commit()
 

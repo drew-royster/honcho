@@ -632,23 +632,14 @@ async def _save_summary(
         )
         return
 
-    # Use SQLAlchemy update() with PostgreSQL's || operator to properly merge JSONB
-    # We need to merge the new summary into the existing summaries structure
     update_data = {}
     existing_summaries = session.internal_metadata.get(SUMMARIES_KEY, {})
     existing_summaries[label_value] = summary
     update_data[SUMMARIES_KEY] = existing_summaries
 
-    stmt = (
-        update(models.Session)
-        .where(models.Session.workspace_name == workspace_name)
-        .where(models.Session.name == session_name)
-        .values(
-            internal_metadata=models.Session.internal_metadata.op("||")(update_data)
-        )
-    )
-
-    await db.execute(stmt)
+    merged = dict(session.internal_metadata or {})
+    merged.update(update_data)
+    session.internal_metadata = merged
     await db.commit()
 
     cache_key = session_cache_key(workspace_name, session_name)

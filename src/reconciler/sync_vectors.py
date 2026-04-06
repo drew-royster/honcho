@@ -17,6 +17,7 @@ from sqlalchemy.sql.functions import func
 
 from src import models
 from src.config import settings
+from src.db_compat import IS_SQLITE
 from src.dependencies import tracked_db
 from src.embedding_client import embedding_client
 from src.vector_store import VectorRecord, VectorStore, get_external_vector_store
@@ -76,8 +77,9 @@ async def _get_documents_needing_sync(
         )
         .order_by(models.Document.last_sync_at.asc().nullsfirst())
         .limit(batch_size)
-        .with_for_update(skip_locked=True)
     )
+    if not IS_SQLITE:
+        stmt = stmt.with_for_update(skip_locked=True)
 
     result = await db.execute(stmt)
     return list(result.scalars().all())
@@ -103,8 +105,9 @@ async def _get_message_embeddings_needing_sync(
         .where(models.MessageEmbedding.sync_state == "pending")
         .order_by(models.MessageEmbedding.last_sync_at.asc().nullsfirst())
         .limit(batch_size)
-        .with_for_update(skip_locked=True)
     )
+    if not IS_SQLITE:
+        stmt = stmt.with_for_update(skip_locked=True)
 
     result = await db.execute(stmt)
     return list(result.scalars().all())
@@ -428,8 +431,9 @@ async def _cleanup_soft_deleted_documents_pgvector(
         .where(models.Document.deleted_at.is_not(None))
         .where(models.Document.deleted_at < cutoff)
         .limit(batch_size)
-        .with_for_update(skip_locked=True)
     )
+    if not IS_SQLITE:
+        stmt = stmt.with_for_update(skip_locked=True)
     result = await db.execute(stmt)
     doc_ids = [row[0] for row in result.all()]
 

@@ -3,8 +3,10 @@ from collections.abc import Callable
 from logging import getLogger
 from typing import Any, TypeVar
 
-from sqlalchemy import ColumnElement, Select, and_, case, cast, literal, not_, or_
+from sqlalchemy import ColumnElement, Select, Text, and_, case, cast, literal, not_, or_
 from sqlalchemy.types import Numeric
+
+from src.db_compat import IS_SQLITE, json_path_text
 
 from ..exceptions import FilterError
 from .formatting import ILIKE_ESCAPE_CHAR, escape_ilike_pattern, parse_datetime_iso
@@ -254,6 +256,8 @@ def _build_field_condition(
                 return column == value
     else:
         if column_name in ("h_metadata", "configuration", "internal_metadata"):
+            if IS_SQLITE:
+                return cast(column, Text).contains(str(value))
             return column.contains(value)
         else:
             return column == value
@@ -337,7 +341,7 @@ def _build_comparison_condition(
     if op_value == "*":
         return None
 
-    field_accessor = column[field_name].astext
+    field_accessor = json_path_text(column, field_name)
 
     # Mapping of operators to their SQLAlchemy methods
     if operator in NUMERIC_OPERATORS:
@@ -415,7 +419,10 @@ def _build_nested_metadata_conditions(
             if field_value == "*":
                 continue
             # Regular field equality - use JSONB contains for nested object matching
-            conditions.append(column.contains({field_name: field_value}))
+            if IS_SQLITE:
+                conditions.append(json_path_text(column, field_name) == field_value)
+            else:
+                conditions.append(column.contains({field_name: field_value}))
 
     # Combine all field conditions with AND
     return _combine_conditions_with_and(conditions)
@@ -535,7 +542,10 @@ def _build_comparison_conditions(
         elif operator == "contains":
             if column_name == "h_metadata":
                 # For JSONB columns, use JSONB contains
-                condition = column.contains(op_value)
+                if IS_SQLITE:
+                    condition = cast(column, Text).contains(str(op_value))
+                else:
+                    condition = column.contains(op_value)
             else:
                 # For text columns, use ILIKE with escaped pattern
                 escaped_value = escape_ilike_pattern(str(op_value))
