@@ -509,6 +509,8 @@ def _convert_openai_tool_choice_to_responses(
         return None
 
     if isinstance(tool_choice, str):
+        if tool_choice == "any":
+            return "required"
         if tool_choice in {"auto", "required", "none"}:
             return tool_choice
         return {"type": "function", "name": tool_choice}
