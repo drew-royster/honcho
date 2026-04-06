@@ -705,12 +705,32 @@ async def _call_openai_responses_api(
     if verbosity:
         text_config["verbosity"] = verbosity
 
+    def _normalize_openai_responses_schema(schema: dict[str, Any]) -> dict[str, Any]:
+        """Make Pydantic JSON schema acceptable to OpenAI strict structured outputs."""
+        def _walk(node: Any) -> Any:
+            if isinstance(node, dict):
+                normalized = {key: _walk(value) for key, value in node.items()}
+                if normalized.get("type") == "object":
+                    if "additionalProperties" not in normalized:
+                        normalized["additionalProperties"] = False
+                    properties = normalized.get("properties")
+                    if isinstance(properties, dict):
+                        normalized["required"] = list(properties.keys())
+                return normalized
+            if isinstance(node, list):
+                return [_walk(item) for item in node]
+            return node
+
+        return _walk(schema)
+
     if response_model:
         text_config["format"] = {
             "type": "json_schema",
             "name": response_model.__name__,
             "strict": True,
-            "schema": response_model.model_json_schema(),
+            "schema": _normalize_openai_responses_schema(
+                response_model.model_json_schema()
+            ),
         }
     elif json_mode:
         text_config["format"] = {"type": "json_object"}
