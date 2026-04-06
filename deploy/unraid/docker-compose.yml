@@ -23,31 +23,7 @@ services:
     environment:
       DB_CONNECTION_URI: postgresql+psycopg://postgres:${HONCHO_DB_PASSWORD}@postgres:5432/postgres
       CACHE_URL: redis://redis:6379/0?suppress=true
-    volumes:
-      - ${HONCHO_CODEX_DIR}:/config/codex
-      - /etc/localtime:/etc/localtime:ro
-
-  deriver:
-    container_name: honcho_deriver
-    image: honcho-codex:latest
-    build:
-      context: ${HONCHO_SOURCE_DIR}
-      dockerfile: Dockerfile
-    restart: unless-stopped
-    depends_on:
-      embeddings:
-        condition: service_healthy
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-    env_file:
-      - .env
-    environment:
-      DB_CONNECTION_URI: postgresql+psycopg://postgres:${HONCHO_DB_PASSWORD}@postgres:5432/postgres
-      CACHE_URL: redis://redis:6379/0?suppress=true
       DERIVER_FLUSH_ENABLED: ${DERIVER_FLUSH_ENABLED:-true}
-    command: ["/app/.venv/bin/python", "-m", "src.deriver"]
     volumes:
       - ${HONCHO_CODEX_DIR}:/config/codex
       - /etc/localtime:/etc/localtime:ro
