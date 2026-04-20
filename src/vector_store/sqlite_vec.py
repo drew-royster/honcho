@@ -126,8 +126,35 @@ class SQLiteVecVectorStore(VectorStore):
 
         if filters:
             for key, value in filters.items():
-                where_clauses.append(f"json_extract(metadata, '$.{key}') = ?")
-                params.append(value)
+                metadata_accessor = "json_extract(metadata, ?)"
+                metadata_path = f"$.{key}"
+
+                if isinstance(value, dict) and "in" in value:
+                    in_values = value["in"]
+                    if not hasattr(in_values, "__iter__") or isinstance(
+                        in_values, str | bytes
+                    ):
+                        raise ValueError(
+                            "sqlite_vec 'in' filters require an iterable of values"
+                        )
+
+                    normalized_values = list(in_values)
+                    if not normalized_values:
+                        where_clauses.append("0 = 1")
+                        continue
+
+                    placeholders = ", ".join("?" for _ in normalized_values)
+                    where_clauses.append(
+                        f"{metadata_accessor} IN ({placeholders})"
+                    )
+                    params.append(metadata_path)
+                    params.extend(normalized_values)
+                elif value is None:
+                    where_clauses.append(f"{metadata_accessor} IS NULL")
+                    params.append(metadata_path)
+                else:
+                    where_clauses.append(f"{metadata_accessor} = ?")
+                    params.extend([metadata_path, value])
 
         if max_distance is not None:
             where_clauses.append("vec_distance_cosine(embedding, vec_f32(?)) <= ?")

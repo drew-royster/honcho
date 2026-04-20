@@ -831,9 +831,23 @@ class EmbeddedHonchoSessionManager:
             _run_coro_sync(self._read_peer_context(observer, observed)).get("card", [])
         )
 
-    def search_context(self, session_key: str, query: str, max_tokens: int = 800) -> str:
+    def _peer_observer_pair(
+        self, session: EmbeddedHonchoSession, *, peer: str
+    ) -> tuple[str, str]:
+        if peer == "ai":
+            return session.assistant_peer_id, session.assistant_peer_id
+        return self._user_observer_pair(session)
+
+    def search_context(
+        self,
+        session_key: str,
+        query: str,
+        max_tokens: int = 800,
+        *,
+        peer: str = "user",
+    ) -> str:
         session = self.get_or_create(session_key)
-        observer, observed = self._user_observer_pair(session)
+        observer, observed = self._peer_observer_pair(session, peer=peer)
         context = _run_coro_sync(
             self._read_peer_context(observer, observed, search_query=query)
         )
@@ -859,15 +873,7 @@ class EmbeddedHonchoSessionManager:
         *,
         peer: str,
     ) -> str:
-        if peer == "ai":
-            observer = session.assistant_peer_id
-            observed = session.assistant_peer_id
-        elif self._config.ai_observe_others:
-            observer = session.assistant_peer_id
-            observed = session.user_peer_id
-        else:
-            observer = session.user_peer_id
-            observed = session.user_peer_id
+        observer, observed = self._peer_observer_pair(session, peer=peer)
 
         return await self._modules.agentic_chat(
             workspace_name=self._config.workspace_id,

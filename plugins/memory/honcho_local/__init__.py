@@ -426,7 +426,12 @@ class HonchoLocalMemoryProvider(MemoryProvider):
 
         def _run() -> None:
             try:
-                result = self._manager.dialectic_query(self._session_key, query, peer="user")
+                result = self._manager.search_context(
+                    self._session_key,
+                    query,
+                    max_tokens=self._context_tokens or 800,
+                    peer="user",
+                )
                 if result and result.strip():
                     with self._prefetch_lock:
                         self._prefetch_result = result
@@ -569,6 +574,16 @@ class HonchoLocalMemoryProvider(MemoryProvider):
                     return json.dumps({"error": "Missing required parameter: query"})
                 peer = str(args.get("peer") or "user").strip() or "user"
                 result = self._manager.dialectic_query(self._session_key, query, peer=peer)
+                if not result or not result.strip():
+                    logger.debug(
+                        "Embedded Honcho dialectic query returned no text; falling back to semantic context search."
+                    )
+                    result = self._manager.search_context(
+                        self._session_key,
+                        query,
+                        max_tokens=self._context_tokens or 800,
+                        peer=peer,
+                    )
                 return json.dumps({"result": result or "No result from Honcho."})
 
             if tool_name == "honcho_conclude":
