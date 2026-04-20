@@ -23,6 +23,9 @@ from src.honcho_embedded import (
     EmbeddedHonchoLLMConfig,
     EmbeddedHonchoRuntimeConfig,
     EmbeddedHonchoSessionManager,
+    honcho_storage_has_content,
+    legacy_memory_seed_marker_path,
+    mark_legacy_memory_seeded,
     prepare_embedding_storage,
 )
 
@@ -342,11 +345,26 @@ class HonchoLocalMemoryProvider(MemoryProvider):
 
         session = self._manager.get_or_create(self._session_key)
         self._message_max_chars = config.message_max_chars
+        seed_marker = legacy_memory_seed_marker_path(config.storage_dir)
+        store_has_content = honcho_storage_has_content(config.db_path)
 
         try:
-            if not session.messages:
+            if store_has_content and not seed_marker.exists():
+                mark_legacy_memory_seeded(
+                    config.storage_dir,
+                    reason="existing_store",
+                )
+            elif not session.messages and not seed_marker.exists():
                 memories_dir = Path(hermes_home).expanduser() / "memories"
-                self._manager.migrate_memory_files(self._session_key, str(memories_dir))
+                migrated = self._manager.migrate_memory_files(
+                    self._session_key,
+                    str(memories_dir),
+                )
+                if migrated:
+                    mark_legacy_memory_seeded(
+                        config.storage_dir,
+                        reason="migrated_memory_files",
+                    )
         except Exception as exc:
             logger.debug("Embedded Honcho memory-file migration skipped: %s", exc)
 

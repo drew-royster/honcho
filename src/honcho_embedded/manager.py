@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import re
+import sqlite3
 import sys
 import threading
 from dataclasses import dataclass, field
@@ -287,6 +288,58 @@ def prepare_embedding_storage(
         encoding="utf-8",
     )
     return payload
+
+
+def legacy_memory_seed_marker_path(storage_dir: str | Path) -> Path:
+    return Path(storage_dir) / "legacy-memory-seeded.json"
+
+
+def mark_legacy_memory_seeded(
+    storage_dir: str | Path,
+    *,
+    reason: str,
+) -> Path:
+    marker = legacy_memory_seed_marker_path(storage_dir)
+    payload = {
+        "reason": reason,
+        "seeded_at": datetime.now(UTC).isoformat(),
+    }
+    marker.write_text(
+        json.dumps(payload, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    return marker
+
+
+def honcho_storage_has_content(db_path: str | Path) -> bool:
+    path = Path(db_path)
+    if not path.exists():
+        return False
+
+    conn: sqlite3.Connection | None = None
+    try:
+        conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+        cur = conn.cursor()
+        tables = {
+            row[0]
+            for row in cur.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            ).fetchall()
+        }
+        for table in ("messages", "documents", "sessions"):
+            if table not in tables:
+                continue
+            row = cur.execute(
+                f'SELECT EXISTS(SELECT 1 FROM "{table}" LIMIT 1)'
+            ).fetchone()
+            if row and int(row[0]):
+                return True
+    except sqlite3.DatabaseError:
+        logger.debug("Failed checking embedded Honcho storage content at %s", path, exc_info=True)
+    finally:
+        if conn is not None:
+            conn.close()
+    return False
 
 
 def _truncate_chars(content: str, limit: int) -> list[str]:

@@ -6,6 +6,9 @@ from .manager import (
     EmbeddedHonchoSessionManager,
     describe_embedding_runtime,
     embedding_storage_dir,
+    honcho_storage_has_content,
+    legacy_memory_seed_marker_path,
+    mark_legacy_memory_seeded,
     prepare_embedding_storage,
 )
 
@@ -17,5 +20,8 @@ __all__ = [
     "EmbeddedHonchoSessionManager",
     "describe_embedding_runtime",
     "embedding_storage_dir",
+    "honcho_storage_has_content",
+    "legacy_memory_seed_marker_path",
+    "mark_legacy_memory_seeded",
     "prepare_embedding_storage",
 ]
