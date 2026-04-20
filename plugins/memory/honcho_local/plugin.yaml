@@ -1,0 +1,5 @@
+name: honcho_local
+version: 0.1.0
+description: "Honcho Local — embedded Honcho memory provider with local SQLite storage and no separate server."
+hooks:
+  - on_session_end

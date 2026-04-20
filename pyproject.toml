@@ -1,3 +1,7 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "honcho"
 version = "3.0.5"
@@ -61,6 +65,11 @@ dev = [
     "boto3>=1.42.5",
     "pytest-xdist>=3.8.0",
 ]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["src", "src.*", "plugins.memory.honcho_local"]
+namespaces = true
 
 [tool.uv.workspace]
 members = [
