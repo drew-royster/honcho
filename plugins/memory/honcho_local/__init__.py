@@ -199,7 +199,9 @@ def _resolve_embeddings_runtime() -> EmbeddedHonchoLLMConfig | None:
         return None
 
     try:
-        requested_provider, model, base_url, api_key = _resolve_task_provider_model("embeddings")
+        requested_provider, model, base_url, api_key, _api_mode = _resolve_task_provider_model(
+            "embeddings"
+        )
     except Exception as exc:
         logger.debug("Hermes auxiliary.embeddings resolution failed: %s", exc)
         requested_provider, model, base_url, api_key = "auto", None, None, None
@@ -211,7 +213,7 @@ def _resolve_embeddings_runtime() -> EmbeddedHonchoLLMConfig | None:
 
     try:
         runtime = resolve_runtime_provider(
-            requested=None if requested_provider == "auto" else requested_provider,
+            requested_provider=None if requested_provider == "auto" else requested_provider,
             explicit_api_key=api_key,
             explicit_base_url=base_url,
         )
