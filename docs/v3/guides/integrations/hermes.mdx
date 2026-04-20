@@ -51,68 +51,48 @@ When Honcho is enabled, Hermes operates with two layer memory by default (`hybri
 
 ## Running Honcho locally with Hermes
 
-If you want to point Hermes at a local Honcho instance instead of the hosted API:
+This Hermes-focused fork is designed to run Honcho as an embedded memory provider.
+The target setup is:
 
-### Docker (quickest)
+- no FastAPI server
+- no separate container
+- no extra Redis or Postgres service
+- local storage under `HERMES_HOME/honcho`
 
-```bash
-git clone https://github.com/plastic-labs/honcho.git
-cd honcho
-cp .env.template .env
-cp docker-compose.yml.example docker-compose.yml
-```
-
-Edit `.env`:
+Install this fork into the same Python environment Hermes uses:
 
 ```bash
-OPENAI_API_KEY=your-openai-api-key
-ANTHROPIC_API_KEY=your-anthropic-api-key
-DB_CONNECTION_URI=postgresql+psycopg://postgres:postgres@database:5432/honcho
-AUTH_USE_AUTH=false
+uv pip install --python ~/.hermes/hermes-agent/venv/bin/python \
+  git+ssh://git@github.com/drew-royster/honcho.git
 ```
+
+Or from a local checkout:
 
 ```bash
-docker compose up -d
-curl http://localhost:8000/health
+uv pip install --python ~/.hermes/hermes-agent/venv/bin/python \
+  --editable /path/to/honcho
 ```
 
-### Manual
+Then configure Hermes to use the embedded provider:
 
-```bash
-git clone https://github.com/plastic-labs/honcho.git
-cd honcho
-uv sync
-cp .env.template .env
+```yaml
+memory:
+  provider: honcho_local
 ```
 
-Edit `.env` with a local or cloud Postgres connection string and API keys, then:
+If your main Hermes runtime does not expose embeddings, add `auxiliary.embeddings`
+so Honcho can build and query vectors locally:
 
-```bash
-uv run alembic upgrade head
-uv run fastapi dev src/main.py
+```yaml
+auxiliary:
+  embeddings:
+    provider: openai
+    model: text-embedding-3-small
 ```
 
-Then update `~/.honcho/config.json` to point at your local instance:
-
-```json
-{
-  "apiKey": "not-needed-with-auth-disabled",
-  "baseUrl": "http://localhost:8000",
-  "hosts": {
-    "hermes": {
-      "workspace": "hermes",
-      "peerName": "your-name",
-      "aiPeer": "hermes",
-      "memoryMode": "hybrid",
-      "enabled": true
-    }
-  }
-}
-```
-
-The `baseUrl` field overrides the default hosted API. With `AUTH_USE_AUTH=false` on the server, the `apiKey` value is ignored but the field must still be present.
-
-See the full [self-hosting guide](/v3/contributing/self-hosting) for database options, cloud setup, and troubleshooting.
+When Hermes starts, `honcho_local` reuses Hermes' configured model runtime for
+Honcho text generation and uses `auxiliary.embeddings` for embeddings. No separate
+Honcho API endpoint or `~/.honcho/config.json` file is required.
 
 ## Verifying the integration
 
@@ -121,7 +101,8 @@ Steps to test the integration via CLI and agentically by speaking to Hermes agen
 ### 1. Check configuration
 
 ```bash
-hermes honcho status
+hermes memory status
+hermes honcho_local status
 ```
 
 ### 2. Test cross-session recall
@@ -179,9 +160,5 @@ If Hermes answers with the stored preference, writeback is functioning.
 
   <Card title="Honcho Architecture" icon="sitemap" href="/v3/documentation/core-concepts/architecture">
     Peers, sessions, and how reasoning works.
-  </Card>
-
-  <Card title="Self-Hosting Guide" icon="server" href="/v3/contributing/self-hosting">
-    Full local environment setup, database options, and troubleshooting.
   </Card>
 </CardGroup>

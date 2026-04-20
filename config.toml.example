@@ -52,10 +52,10 @@ PROFILES_SAMPLE_RATE = 0.1
 [llm]
 DEFAULT_MAX_TOKENS = 2500
 EMBEDDING_PROVIDER = "openai"
-# EMBEDDING_PROVIDER = "openai_compatible"  # Example for local Ollama
-# EMBEDDING_MODEL = "qwen3-embedding:0.6b"
-# EMBEDDING_API_KEY = "ollama"
-# EMBEDDING_BASE_URL = "http://localhost:11434/v1"
+# EMBEDDING_PROVIDER = "openai_compatible"  # Example for a custom OpenAI-compatible embeddings endpoint
+# EMBEDDING_MODEL = "text-embedding-3-small"
+# EMBEDDING_API_KEY = "your-api-key"
+# EMBEDDING_BASE_URL = "http://localhost:8000/v1"
 MAX_TOOL_OUTPUT_CHARS = 10000  # Max chars for tool output (~2500 tokens)
 MAX_MESSAGE_CONTENT_CHARS = 2000  # Max chars per message in tool results
 
@@ -63,9 +63,6 @@ MAX_MESSAGE_CONTENT_CHARS = 2000  # Max chars per message in tool results
 # ANTHROPIC_API_KEY = "your-api-key"
 # OPENAI_API_KEY = "your-api-key"
 # OPENAI_USE_RESPONSES_API = false
-# OPENAI_USE_CODEX_AUTH = false
-# OPENAI_CODEX_AUTH_FILE = "~/.codex/auth.json"
-# OPENAI_CODEX_BASE_URL = "https://chatgpt.com/backend-api/codex"
 # OPENAI_COMPATIBLE_API_KEY = "your-api-key"
 # GEMINI_API_KEY = "your-api-key"
 # GROQ_API_KEY = "your-api-key"
