@@ -11,6 +11,7 @@ from src.honcho_embedded import (
     legacy_memory_seed_marker_path,
     mark_legacy_memory_seeded,
     prepare_embedding_storage,
+    resolve_embedded_dream_settings,
 )
 
 
@@ -116,3 +117,56 @@ def test_mark_legacy_memory_seeded_writes_namespaced_marker(tmp_path):
     assert marker == legacy_memory_seed_marker_path(storage_dir)
     payload = json.loads(marker.read_text(encoding="utf-8"))
     assert payload["reason"] == "existing_store"
+
+
+def test_resolve_embedded_dream_settings_inherits_main_model(monkeypatch):
+    runtime = EmbeddedHonchoRuntimeConfig(
+        default_llm=EmbeddedHonchoLLMConfig(
+            provider="openai-codex",
+            model="gpt-5.4",
+        )
+    )
+
+    monkeypatch.delenv("HONCHO_LOCAL_ENABLE_DREAMS", raising=False)
+    monkeypatch.delenv("HONCHO_LOCAL_DREAM_DOCUMENT_THRESHOLD", raising=False)
+    monkeypatch.delenv("HONCHO_LOCAL_DREAM_IDLE_TIMEOUT_MINUTES", raising=False)
+    monkeypatch.delenv("HONCHO_LOCAL_DREAM_MIN_HOURS_BETWEEN_DREAMS", raising=False)
+    monkeypatch.delenv("HONCHO_LOCAL_DREAM_POLL_SECONDS", raising=False)
+
+    settings = resolve_embedded_dream_settings(runtime)
+
+    assert settings["enabled"] is True
+    assert settings["provider"] == "openai"
+    assert settings["model"] == "gpt-5.4"
+    assert settings["deduction_model"] == "gpt-5.4"
+    assert settings["induction_model"] == "gpt-5.4"
+    assert settings["document_threshold"] == 50
+    assert settings["idle_timeout_minutes"] == 60
+    assert settings["min_hours_between_dreams"] == 8
+    assert settings["queue_poll_seconds"] == 30
+    assert settings["enabled_types"] == ["omni"]
+
+
+def test_resolve_embedded_dream_settings_honors_env_overrides(monkeypatch):
+    runtime = EmbeddedHonchoRuntimeConfig(
+        default_llm=EmbeddedHonchoLLMConfig(
+            provider="openai",
+            model="gpt-4o-mini",
+        )
+    )
+
+    monkeypatch.setenv("HONCHO_LOCAL_ENABLE_DREAMS", "false")
+    monkeypatch.setenv("HONCHO_LOCAL_DREAM_DOCUMENT_THRESHOLD", "7")
+    monkeypatch.setenv("HONCHO_LOCAL_DREAM_IDLE_TIMEOUT_MINUTES", "15")
+    monkeypatch.setenv("HONCHO_LOCAL_DREAM_MIN_HOURS_BETWEEN_DREAMS", "2")
+    monkeypatch.setenv("HONCHO_LOCAL_DREAM_POLL_SECONDS", "5")
+    monkeypatch.setenv("HONCHO_LOCAL_DREAM_TYPES", "omni,induction")
+
+    settings = resolve_embedded_dream_settings(runtime)
+
+    assert settings["enabled"] is False
+    assert settings["document_threshold"] == 7
+    assert settings["idle_timeout_minutes"] == 15
+    assert settings["min_hours_between_dreams"] == 2
+    assert settings["queue_poll_seconds"] == 5
+    assert settings["enabled_types"] == ["omni", "induction"]

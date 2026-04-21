@@ -11,6 +11,7 @@ from src.honcho_embedded import (
     EmbeddedHonchoRuntimeConfig,
     describe_embedding_runtime,
     embedding_storage_dir,
+    resolve_embedded_dream_settings,
 )
 
 
@@ -35,6 +36,7 @@ def _cmd_status() -> None:
         else None
     )
     runtime_descriptor = describe_embedding_runtime(runtime)
+    dream_settings = resolve_embedded_dream_settings(runtime)
     storage_dir = embedding_storage_dir(str(hermes_home), runtime)
     db_path = storage_dir / "honcho.db"
 
@@ -68,6 +70,28 @@ def _cmd_status() -> None:
         )
     else:
         print("  Embeddings:  unresolved")
+    print(
+        "  Dreams:      "
+        + (
+            "enabled"
+            if dream_settings["enabled"]
+            else "disabled"
+        )
+    )
+    if dream_settings["enabled"]:
+        provider_label = dream_settings["provider"] or "unresolved"
+        model_label = dream_settings["model"] or "(provider default)"
+        print(f"  Dream LLM:   {provider_label} / {model_label}")
+        print(
+            "  Dreaming:    "
+            f"idle {dream_settings['idle_timeout_minutes']}m, "
+            f"threshold {dream_settings['document_threshold']} docs, "
+            f"min gap {dream_settings['min_hours_between_dreams']}h"
+        )
+        print(
+            "  Dream Poll:  "
+            f"{dream_settings['queue_poll_seconds']}s"
+        )
     print()
 
 

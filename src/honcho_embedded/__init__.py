@@ -10,6 +10,7 @@ from .manager import (
     legacy_memory_seed_marker_path,
     mark_legacy_memory_seeded,
     prepare_embedding_storage,
+    resolve_embedded_dream_settings,
 )
 
 __all__ = [
@@ -24,4 +25,5 @@ __all__ = [
     "legacy_memory_seed_marker_path",
     "mark_legacy_memory_seeded",
     "prepare_embedding_storage",
+    "resolve_embedded_dream_settings",
 ]

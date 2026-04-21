@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import hashlib
 import json
 import logging
@@ -27,6 +28,8 @@ _SYNC_LOOP: asyncio.AbstractEventLoop | None = None
 _SYNC_LOOP_THREAD: threading.Thread | None = None
 _SYNC_LOOP_LOCK = threading.Lock()
 _SYNC_LOOP_READY = threading.Event()
+_BACKGROUND_QUEUE_FUTURE: concurrent.futures.Future[Any] | None = None
+_BACKGROUND_QUEUE_LOCK = threading.Lock()
 _BOOTSTRAP_ALLOWED_PRELOADS = frozenset(
     {
         "src",
@@ -57,6 +60,9 @@ _KNOWN_EMBEDDING_DIMENSIONS: dict[str, int] = {
     "text-embedding-3-large": 3072,
     "openai/text-embedding-3-large": 3072,
 }
+
+_TRUE_VALUES = frozenset({"1", "true", "yes", "on"})
+_FALSE_VALUES = frozenset({"0", "false", "no", "off"})
 
 
 @dataclass(frozen=True)
@@ -203,6 +209,28 @@ def _normalize_embedding_provider(config: EmbeddedHonchoLLMConfig | None) -> str
     return provider or "none"
 
 
+def _normalize_bool_env(name: str, default: bool) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    normalized = value.strip().lower()
+    if normalized in _TRUE_VALUES:
+        return True
+    if normalized in _FALSE_VALUES:
+        return False
+    return default
+
+
+def _normalize_int_env(name: str, default: int, *, minimum: int = 1) -> int:
+    value = os.getenv(name)
+    if value is None or not value.strip():
+        return default
+    try:
+        return max(minimum, int(value.strip()))
+    except ValueError:
+        return default
+
+
 def _resolve_embedding_model(config: EmbeddedHonchoLLMConfig | None) -> str:
     provider = _normalize_embedding_provider(config)
     model = str(config.model or "").strip() if config is not None else ""
@@ -340,6 +368,54 @@ def honcho_storage_has_content(db_path: str | Path) -> bool:
         if conn is not None:
             conn.close()
     return False
+
+
+def resolve_embedded_dream_settings(
+    runtime: EmbeddedHonchoRuntimeConfig | None = None,
+) -> dict[str, Any]:
+    runtime = runtime or EmbeddedHonchoRuntimeConfig()
+    text_runtime = runtime.default_llm
+    enabled = bool(text_runtime) and _normalize_bool_env(
+        "HONCHO_LOCAL_ENABLE_DREAMS",
+        True,
+    )
+
+    provider, _provider_env = (
+        _normalize_text_llm(text_runtime) if text_runtime is not None else (None, {})
+    )
+    model = str(text_runtime.model or "").strip() or None if text_runtime else None
+
+    enabled_types_raw = os.getenv("HONCHO_LOCAL_DREAM_TYPES", "omni")
+    enabled_types = [
+        item.strip()
+        for item in enabled_types_raw.split(",")
+        if item.strip()
+    ] or ["omni"]
+
+    return {
+        "enabled": enabled,
+        "provider": provider,
+        "model": model,
+        "deduction_model": model,
+        "induction_model": model,
+        "document_threshold": _normalize_int_env(
+            "HONCHO_LOCAL_DREAM_DOCUMENT_THRESHOLD",
+            50,
+        ),
+        "idle_timeout_minutes": _normalize_int_env(
+            "HONCHO_LOCAL_DREAM_IDLE_TIMEOUT_MINUTES",
+            60,
+        ),
+        "min_hours_between_dreams": _normalize_int_env(
+            "HONCHO_LOCAL_DREAM_MIN_HOURS_BETWEEN_DREAMS",
+            8,
+        ),
+        "queue_poll_seconds": _normalize_int_env(
+            "HONCHO_LOCAL_DREAM_POLL_SECONDS",
+            30,
+        ),
+        "enabled_types": enabled_types,
+    }
 
 
 def _truncate_chars(content: str, limit: int) -> list[str]:
@@ -490,6 +566,7 @@ def _build_env(
     runtime: EmbeddedHonchoRuntimeConfig,
 ) -> dict[str, str]:
     config.storage_dir.mkdir(parents=True, exist_ok=True)
+    dream_settings = resolve_embedded_dream_settings(runtime)
 
     env: dict[str, str] = {
         "DB_CONNECTION_URI": f"sqlite+aiosqlite:///{config.db_path.resolve()}",
@@ -500,7 +577,13 @@ def _build_env(
         "METRICS_ENABLED": "false",
         "TELEMETRY_ENABLED": "false",
         "SENTRY_ENABLED": "false",
-        "DREAM_ENABLED": "false",
+        "DREAM_ENABLED": "true" if dream_settings["enabled"] else "false",
+        "DREAM_DOCUMENT_THRESHOLD": str(dream_settings["document_threshold"]),
+        "DREAM_IDLE_TIMEOUT_MINUTES": str(dream_settings["idle_timeout_minutes"]),
+        "DREAM_MIN_HOURS_BETWEEN_DREAMS": str(
+            dream_settings["min_hours_between_dreams"]
+        ),
+        "DREAM_ENABLED_TYPES": ",".join(dream_settings["enabled_types"]),
         "NAMESPACE": config.workspace_id,
     }
 
@@ -512,6 +595,9 @@ def _build_env(
                 env[f"{prefix}_PROVIDER"] = provider
                 if runtime.default_llm.model:
                     env[f"{prefix}_MODEL"] = runtime.default_llm.model
+            if dream_settings["enabled"] and runtime.default_llm.model:
+                env["DREAM_DEDUCTION_MODEL"] = runtime.default_llm.model
+                env["DREAM_INDUCTION_MODEL"] = runtime.default_llm.model
             for level, (thinking_budget, max_tool_iterations) in (
                 _DIALECTIC_LEVEL_DEFAULTS.items()
             ):
@@ -599,6 +685,30 @@ def _bootstrap_honcho(
         return modules
 
 
+async def _background_queue_loop(queue_manager: Any, poll_seconds: int) -> None:
+    logger.info(
+        "Embedded Honcho background queue worker started (poll=%ss)",
+        poll_seconds,
+    )
+    while True:
+        try:
+            claimed = await queue_manager.get_and_claim_work_units()
+            if not claimed:
+                await asyncio.sleep(poll_seconds)
+                continue
+
+            for work_unit_key, aqs_id in claimed.items():
+                worker_id = queue_manager.create_worker_id()
+                queue_manager.track_worker_work_unit(worker_id, work_unit_key, aqs_id)
+                await queue_manager.process_work_unit(work_unit_key, worker_id)
+        except asyncio.CancelledError:
+            logger.info("Embedded Honcho background queue worker stopped")
+            raise
+        except Exception:
+            logger.exception("Embedded Honcho background queue worker failed")
+            await asyncio.sleep(poll_seconds)
+
+
 class EmbeddedHonchoSessionManager:
     def __init__(
         self,
@@ -613,12 +723,30 @@ class EmbeddedHonchoSessionManager:
         self._context_cache: dict[str, dict[str, str]] = {}
         self._dialectic_cache: dict[str, str] = {}
         self._queue_manager: Any | None = None
+        self._ensure_background_queue_worker()
 
     @property
     def _qm(self) -> Any:
         if self._queue_manager is None:
             self._queue_manager = self._modules.QueueManager()
         return self._queue_manager
+
+    def _ensure_background_queue_worker(self) -> None:
+        dream_settings = resolve_embedded_dream_settings(self._runtime)
+        if not dream_settings["enabled"]:
+            return
+
+        loop = _ensure_sync_loop()
+        poll_seconds = int(dream_settings["queue_poll_seconds"])
+
+        global _BACKGROUND_QUEUE_FUTURE
+        with _BACKGROUND_QUEUE_LOCK:
+            if _BACKGROUND_QUEUE_FUTURE is not None and not _BACKGROUND_QUEUE_FUTURE.done():
+                return
+            _BACKGROUND_QUEUE_FUTURE = asyncio.run_coroutine_threadsafe(
+                _background_queue_loop(self._qm, poll_seconds),
+                loop,
+            )
 
     def _sanitize_id(self, id_str: str) -> str:
         return _SANITIZE_ID_PATTERN.sub("-", id_str)
